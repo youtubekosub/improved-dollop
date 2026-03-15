@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ultimate Muxer - itag 399+251</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.0/dist/ffmpeg.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
+    
+    <style>
+        body { background: #0b0e14; color: #e2e8f0; font-family: 'Inter', sans-serif; }
+        .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .neon-border { box-shadow: 0 0 15px rgba(34, 211, 238, 0.3); }
+        .loader { border-top-color: #22d3ee; animation: spinner 1.5s linear infinite; }
+        @keyframes spinner { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <div class="max-w-2xl w-full animate__animated animate__fadeIn">
+        <div class="text-center mb-10">
+            <h1 class="text-6xl font-black bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-fuchsia-500 mb-4">
+                MUXER.IO
+            </h1>
+            <p class="text-slate-400 tracking-widest text-sm uppercase">Advanced Video Synthesis Engine</p>
+        </div>
+
+        <div class="glass-card rounded-3xl p-8 neon-border">
+            <div class="space-y-6">
+                <div class="relative">
+                    <input type="text" id="urlInput" placeholder="YouTube URLを入力..." 
+                           class="w-full bg-slate-900/50 border border-slate-700 rounded-2xl px-6 py-5 focus:ring-4 focus:ring-cyan-500/20 outline-none transition-all text-lg">
+                </div>
+                
+                <button onclick="startProcess()" id="mainBtn"
+                        class="w-full bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 py-5 rounded-2xl font-black text-xl shadow-xl transform active:scale-95 transition-all">
+                    START SYNTHESIS
+                </button>
+            </div>
+
+            <div id="statusArea" class="mt-10 hidden border-t border-slate-700 pt-8 animate__animated animate__fadeInUp">
+                <div class="flex items-center space-x-6 mb-6">
+                    <div id="loadingSpinner" class="loader w-10 h-10 border-4 border-slate-700 rounded-full"></div>
+                    <div>
+                        <h3 id="statusTitle" class="font-bold text-lg text-cyan-400">解析中...</h3>
+                        <p id="statusDetail" class="text-sm text-slate-500">外部APIからストリームを取得しています</p>
+                    </div>
+                </div>
+                
+                <div class="w-full bg-slate-800 rounded-full h-3 overflow-hidden">
+                    <div id="progressBar" class="bg-gradient-to-r from-cyan-400 to-blue-500 h-full w-0 transition-all duration-500"></div>
+                </div>
+
+                <div id="videoContainer" class="mt-8 hidden">
+                    <video id="outputPlayer" controls class="w-full rounded-2xl shadow-2xl border border-white/10"></video>
+                    <a id="downloadBtn" class="mt-4 block text-center py-3 bg-white/10 hover:bg-white/20 rounded-xl font-bold transition-all">
+                        ファイルを保存
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createFFmpeg, fetchFile } = FFmpeg;
+        const ffmpeg = createFFmpeg({ log: false });
+
+        async function startProcess() {
+            const url = document.getElementById('urlInput').value;
+            if (!url) {
+                return Swal.fire({
+                    icon: 'error',
+                    title: 'URLが空です',
+                    text: '有効なYouTube URLを入力してください',
+                    background: '#1e293b',
+                    color: '#fff',
+                    showClass: { popup: 'animate__animated animate__shakeX' }
+                });
+            }
+
+            const statusArea = document.getElementById('statusArea');
+            const mainBtn = document.getElementById('mainBtn');
+            const progressBar = document.getElementById('progressBar');
+            
+            mainBtn.disabled = true;
+            statusArea.classList.remove('hidden');
+            progressBar.style.width = '10%';
+
+            try {
+                // 1. 外部APIから情報を取得 (itag 399, 251の取得)
+                // ヒント: https://yudlp.vercel.app/stream/ へのfetch
+                updateStatus("解析中", "ストリームURLを取得しています...");
+                
+                // ※ ここは実際のAPIの仕様に合わせて調整が必要ですが、一般的なyt-dlpラッパーの形式で記述します
+                const apiResponse = await fetch(`https://yudlp.vercel.app/stream/?url=${encodeURIComponent(url)}`);
+                const data = await apiResponse.json();
+                
+                // 簡易的にitag 399と251を抽出（APIのレスポンス形式に依存）
+                const vUrl = data.formats.find(f => f.format_id === "399")?.url;
+                const aUrl = data.formats.find(f => f.format_id === "251")?.url;
+
+                if (!vUrl || !aUrl) throw new Error("指定のitag (399/251) が見つかりませんでした。");
+
+                // 2. ffmpeg.wasm ロード
+                updateStatus("準備中", "FFmpegエンジンを起動しています...", '30%');
+                if (!ffmpeg.isLoaded()) await ffmpeg.load();
+
+                // 3. ダウンロード & プロキシ経由で仮想FSへ書き込み
+                updateStatus("合成中", "ブラウザのメモリ内で映像と音声を結合しています...", '60%');
+                
+                // プロキシを使用してCORSを回避
+                const proxyV = `/proxy?url=${encodeURIComponent(vUrl)}`;
+                const proxyA = `/proxy?url=${encodeURIComponent(aUrl)}`;
+
+                ffmpeg.FS('writeFile', 'v.mp4', await fetchFile(proxyV));
+                ffmpeg.FS('writeFile', 'a.webm', await fetchFile(proxyA));
+
+                // 4. 合成実行 (再エンコードなしで高速結合)
+                await ffmpeg.run('-i', 'v.mp4', '-i', 'a.webm', '-c', 'copy', 'out.mp4');
+
+                // 5. 結果の表示
+                const resultData = ffmpeg.FS('readFile', 'out.mp4');
+                const videoBlob = new Blob([resultData.buffer], { type: 'video/mp4' });
+                const finalUrl = URL.createObjectURL(videoBlob);
+
+                progressBar.style.width = '100%';
+                document.getElementById('loadingSpinner').classList.add('hidden');
+                updateStatus("完成！", "再生の準備が整いました。");
+
+                const player = document.getElementById('outputPlayer');
+                player.src = finalUrl;
+                document.getElementById('videoContainer').classList.remove('hidden');
+                
+                // ダウンロードボタン設定
+                const dl = document.getElementById('downloadBtn');
+                dl.href = finalUrl;
+                dl.download = "muxed_video.mp4";
+
+                Swal.fire({
+                    icon: 'success',
+                    title: '合成完了',
+                    text: 'ブラウザでの合成が正常に終了しました！',
+                    timer: 3000,
+                    background: '#1e293b',
+                    color: '#fff'
+                });
+
+            } catch (err) {
+                console.error(err);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'エラー発生',
+                    text: err.message,
+                    background: '#1e293b',
+                    color: '#fff'
+                });
+                mainBtn.disabled = false;
+            }
+        }
+
+        function updateStatus(title, detail, width) {
+            document.getElementById('statusTitle').innerText = title;
+            document.getElementById('statusDetail').innerText = detail;
+            if(width) document.getElementById('progressBar').style.width = width;
+        }
+    </script>
+</body>
+</html>
+
